@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"debug/elf"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
+	"strconv"
+	"strings"
 )
 
 type program struct {
@@ -62,11 +66,42 @@ const (
 	r11
 	r12
 	r13
-	r41mov 
+	r14
 	r15
 	rip
 	rflags
 )
+
+var registerMap = map[register]string{
+	rax:    "rax",
+	rcx:    "rcx",
+	rdx:    "rdx",
+	rbx:    "rbx",
+	rsp:    "rsp",
+	rbp:    "rbp",
+	rsi:    "rsi",
+	rdi:    "rdi",
+	r8:     "r8",
+	r9:     "r9",
+	r10:    "r10",
+	r11:    "r11",
+	r12:    "r12",
+	r13:    "r13",
+	r14:    "r14",
+	r15:    "r15",
+	rip:    "rip",
+	rflags: "rflags",
+}
+
+func stringToRegister(r string) (register, bool) {
+	for reg, name := range registerMap {
+		if name == r {
+			return reg, true
+		}
+	}
+
+	return rax, false
+}
 
 type registerFile [18]uint64
 
@@ -82,12 +117,14 @@ type cpu struct {
 	prog    *program
 	mem     []byte
 	regfile *registerFile
+	tick    chan bool
 }
 
 func newCPU(memory uint64) cpu {
 	return cpu{
 		mem:     make([]byte, memory),
 		regfile: &registerFile{},
+		tick:    make(chan bool, 1),
 	}
 }
 
@@ -185,18 +222,18 @@ func (c *cpu) loop() {
 				hbdebug("prog", c.mem[ip:ip+10])
 				panic("Unknown prefix instruction")
 			}
-			
+
 			ip++
 			inb1 = c.mem[ip]
 		}
 
 		if inb1 >= 0x50 && inb1 < 0x58 { // push
-			regvalue := c.regfile.get(register(inb1-0x50))
+			regvalue := c.regfile.get(register(inb1 - 0x50))
 			sp := c.regfile.get(rsp)
 			c.writeBytes(c.mem, sp, 8, regvalue)
 			c.regfile.set(rsp, uint64(sp-8))
 		} else if inb1 >= 0x58 && inb1 < 0x60 { // pop
-			lhs := register(inb1-0x58)
+			lhs := register(inb1 - 0x58)
 			sp := c.regfile.get(rsp)
 			c.regfile.set(lhs, c.readBytes(c.mem, sp, 8))
 			c.regfile.set(rsp, uint64(sp+8))
@@ -208,7 +245,7 @@ func (c *cpu) loop() {
 			c.regfile.set(lhs, c.regfile.get(rhs))
 		} else if inb1 >= 0xB8 && inb1 < 0xC0 { // mov r16/32/64, imm16/32/64
 			lreg := register(inb1 - 0xB8)
-			val := c.readBytes(c.mem, ip + uint64(1), widthPrefix / 8)
+			val := c.readBytes(c.mem, ip+uint64(1), widthPrefix/8)
 			ip += uint64(widthPrefix / 8)
 			c.regfile.set(lreg, val)
 		} else if inb1 == 0xC3 { // ret
@@ -224,10 +261,12 @@ func (c *cpu) loop() {
 
 		// inc instruction pointer
 		c.regfile.set(rip, ip+1)
+
+		<-c.tick
 	}
 }
 
-func (c *cpu) run(prog *program) {
+func (c *cpu) run(prog *program, auto bool) {
 	copy(c.mem[0x400000:0x400000+len(prog.bytes)], prog.bytes)
 	main := prog.findGlobalFunc("main")
 	c.regfile.set(rip, main.Value)
@@ -235,16 +274,123 @@ func (c *cpu) run(prog *program) {
 	c.writeBytes(c.mem, uint64(len(c.mem)-16), 8, uint64(len(c.mem)-8))
 	hdebug("mem", c.readBytes(c.mem, uint64(len(c.mem)-16), 8))
 	c.regfile.set(rsp, uint64(len(c.mem)-16))
+
+	if auto {
+		go func() {
+			for {
+				c.tick <- true
+			}
+		}()
+	}
+
 	c.loop()
 }
 
+func repl(c *cpu) {
+	fmt.Println("go-amd64-emulator REPL")
+	help := `commands:
+	s/step:				continue to next instruction
+	r/registers [$reg]:		print all register values or just $reg
+	d/decimal:			toggle hex/decimal printing
+	m/memory $from $count:		print memory values starting at $from until $from+$count
+	h/help:				print this`
+	fmt.Println(help)
+	scanner := bufio.NewScanner(os.Stdin)
+
+	intFormat := "%d"
+	for {
+		fmt.Printf("> ")
+		scanner.Scan()
+		fmt.Printf("\n")
+		input := scanner.Text()
+		parts := strings.Split(input, " ")
+
+		switch parts[0] {
+		case "h":
+			fallthrough
+		case "help":
+			fmt.Println(help)
+
+		case "m":
+			fallthrough
+		case "memory":
+			msg := "Invalid arguments: m/memory $from $to"
+			if len(parts) != 3 {
+				fmt.Println(msg)
+				continue
+			}
+
+			from, err := strconv.Atoi(parts[1])
+			if err != nil {
+				fmt.Println(msg)
+				continue
+			}
+
+			to, err := strconv.Atoi(parts[2])
+			if err != nil {
+				fmt.Println(msg)
+				continue
+			}
+
+			hbdebug(fmt.Sprintf("memory[%d:%d]", c.mem, from, from+to), c.mem[from:from+to])
+
+		case "d":
+			fallthrough
+		case "decimal":
+			if intFormat == "%d" {
+				intFormat = "%x"
+			} else {
+				intFormat = "%d"
+			}
+
+		case "r":
+			fallthrough
+		case "registers":
+			filter := ""
+			if len(parts) > 1 {
+				filter = parts[1]
+			}
+
+			for reg, name := range registerMap {
+				if filter != "" {
+					filteredReg, ok := stringToRegister(filter)
+					if !ok || reg != filteredReg {
+						continue
+					}
+
+					fmt.Printf("%s:\t"+intFormat, name, c.regfile.get(reg))
+				}
+			}
+		}
+
+		c.tick <- true
+	}
+}
+
 func main() {
+	if len(os.Args) == 0 {
+		log.Fatal("Binary not provided")
+	}
+
 	prog, err := newProgramFromFile(os.Args[1])
 	if err != nil {
 		panic(err)
 	}
 
+	debug := false
+	for _, arg := range os.Args[1:] {
+		switch arg {
+		case "--debug":
+		case "-d":
+			debug = true
+		}
+	}
+
 	// 10 MB
 	cpu := newCPU(0x400000 * 10)
-	cpu.run(prog)
+	cpu.run(prog, !debug)
+
+	if debug {
+		repl(&cpu)
+	}
 }
