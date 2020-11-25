@@ -93,16 +93,6 @@ var registerMap = map[register]string{
 	rflags: "rflags",
 }
 
-func stringToRegister(r string) (register, bool) {
-	for reg, name := range registerMap {
-		if name == r {
-			return reg, true
-		}
-	}
-
-	return rax, false
-}
-
 type registerFile [18]uint64
 
 func (regfile *registerFile) get(r register) uint64 {
@@ -140,32 +130,6 @@ func hbdebug(msg string, bs []byte) {
 		args = append(args, b)
 	}
 	fmt.Printf(str+"\n", args...)
-}
-
-func (c *cpu) memset32(address uint64, value uint32) {
-	bytes := []byte{
-		byte(value & 0xF000),
-		byte(value & 0x0F00),
-		byte(value & 0x00F0),
-		byte(value & 0x000F),
-	}
-
-	copy(c.mem[address:address+4], bytes)
-}
-
-func (c *cpu) memset64(address uint64, value uint64) {
-	bytes := []byte{
-		byte(value & 0xF0000000),
-		byte(value & 0x0F000000),
-		byte(value & 0x00F00000),
-		byte(value & 0x000F0000),
-		byte(value & 0x0000F000),
-		byte(value & 0x00000F00),
-		byte(value & 0x000000F0),
-		byte(value & 0x0000000F),
-	}
-
-	copy(c.mem[address:address+8], bytes)
 }
 
 func (c *cpu) readBytes(from []byte, start uint64, bytes int) uint64 {
@@ -302,7 +266,9 @@ func repl(c *cpu) {
 	intFormat := "%d"
 	for {
 		fmt.Printf("> ")
-		scanner.Scan()
+		if !scanner.Scan() {
+			break
+		}
 		input := scanner.Text()
 		parts := strings.Split(input, " ")
 
@@ -357,11 +323,8 @@ func repl(c *cpu) {
 			for i := 0; i < len(registerMap); i++ {
 				reg := register(i)
 				name := registerMap[reg]
-				if filter != "" {
-					filteredReg, ok := stringToRegister(filter)
-					if !ok || reg != filteredReg {
-						continue
-					}
+				if filter != "" && filter != name {
+					continue
 				}
 
 				fmt.Printf("%s:\t"+intFormat+"\n", name, c.regfile.get(reg))
