@@ -29,23 +29,19 @@ func newProgramFromFile(filename string) (*program, error) {
 	}, err
 }
 
-func (p program) findSymbol(name string, symtype elf.SymType, symbind elf.SymBind) *elf.Symbol {
+func (p program) findGlobalFunc(name string) *elf.Symbol {
 	symbols, err := p.elf.Symbols()
 	if err != nil {
 		panic(err)
 	}
 
 	for _, sym := range symbols {
-		if name == sym.Name && symtype == elf.ST_TYPE(sym.Info) && symbind == elf.ST_BIND(sym.Info) {
+		if name == sym.Name && elf.STT_FUNC == elf.ST_TYPE(sym.Info) && elf.STB_GLOBAL == elf.ST_BIND(sym.Info) {
 			return &sym
 		}
 	}
 
 	return nil
-}
-
-func (p program) findGlobalFunc(name string) *elf.Symbol {
-	return p.findSymbol(name, elf.STT_FUNC, elf.STB_GLOBAL)
 }
 
 type register int
