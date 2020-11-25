@@ -193,7 +193,7 @@ func (c *cpu) loop() {
 		if ip == uint64(len(c.mem)-8) &&
 			c.mem[ip] == 0xBE &&
 			c.mem[ip+1] == 0xEF {
-			break
+			os.Exit(int(c.regfile.get(rax)))
 		}
 
 		inb1 := c.mem[ip]
@@ -229,7 +229,7 @@ func (c *cpu) loop() {
 		if inb1 >= 0x50 && inb1 < 0x58 { // push
 			regvalue := c.regfile.get(register(inb1 - 0x50))
 			sp := c.regfile.get(rsp)
-			c.writeBytes(c.mem, sp, 8, regvalue)
+			c.writeBytes(c.mem, sp-8, 8, regvalue)
 			c.regfile.set(rsp, uint64(sp-8))
 		} else if inb1 >= 0x58 && inb1 < 0x60 { // pop
 			lhs := register(inb1 - 0x58)
@@ -239,8 +239,9 @@ func (c *cpu) loop() {
 		} else if inb1 == 0x89 { // mov r/m16/32/64, r/m16/32/64
 			ip++
 			inb2 := c.mem[ip]
-			lhs := register((inb2 & 0b00111000) >> 3)
-			rhs := register(inb2 & 0b111)
+			rhs := register((inb2 & 0b00111000) >> 3)
+			lhs := register(inb2 & 0b111)
+			hdebug("setting " + registerMap[lhs] +" to " + registerMap[rhs], c.regfile.get(rhs))
 			c.regfile.set(lhs, c.regfile.get(rhs))
 		} else if inb1 >= 0xB8 && inb1 < 0xC0 { // mov r16/32/64, imm16/32/64
 			lreg := register(inb1 - 0xB8)
@@ -250,6 +251,8 @@ func (c *cpu) loop() {
 		} else if inb1 == 0xC3 { // ret
 			sp := c.regfile.get(rsp)
 			retAddress := c.readBytes(c.mem, sp, 8)
+			hdebug("reading from mem", sp)
+			hdebug("returning to", retAddress)
 			c.regfile.set(rsp, uint64(sp+8))
 			c.regfile.set(rip, retAddress)
 			continue
@@ -269,7 +272,6 @@ func (c *cpu) run(prog *program) {
 	c.regfile.set(rip, main.Value)
 	c.mem[len(c.mem)-8] = 0xBE
 	c.mem[len(c.mem)-7] = 0xEF
-	fmt.Println(uint64(len(c.mem)-8))
 	c.writeBytes(c.mem, uint64(len(c.mem)-16), 8, uint64(len(c.mem)-8))
 	c.regfile.set(rsp, uint64(len(c.mem)-16))
 	c.loop()
