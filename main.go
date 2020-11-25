@@ -179,7 +179,7 @@ func (c *cpu) readBytes(from []byte, start uint64, bytes int) uint64 {
 
 func (c *cpu) writeBytes(to []byte, start uint64, bytes int, val uint64) {
 	for i := 0; i < bytes; i++ {
-		to[start+uint64(i)] = byte(val >> (8*i) & 0xFF)
+		to[start+uint64(i)] = byte(val >> (8 * i) & 0xFF)
 	}
 }
 
@@ -282,7 +282,7 @@ func (c *cpu) resolveDebuggerValue(dval string) (uint64, error) {
 	}
 
 	if len(dval) > 2 && (dval[:2] == "0x" || dval[:2] == "0X") {
-		return strconv.ParseUint(dval[2:], 16, 64)	
+		return strconv.ParseUint(dval[2:], 16, 64)
 	}
 
 	return strconv.ParseUint(dval, 10, 64)
