@@ -241,7 +241,6 @@ func (c *cpu) loop() {
 			inb2 := c.mem[ip]
 			rhs := register((inb2 & 0b00111000) >> 3)
 			lhs := register(inb2 & 0b111)
-			hdebug("setting " + registerMap[lhs] +" to " + registerMap[rhs], c.regfile.get(rhs))
 			c.regfile.set(lhs, c.regfile.get(rhs))
 		} else if inb1 >= 0xB8 && inb1 < 0xC0 { // mov r16/32/64, imm16/32/64
 			lreg := register(inb1 - 0xB8)
@@ -251,8 +250,6 @@ func (c *cpu) loop() {
 		} else if inb1 == 0xC3 { // ret
 			sp := c.regfile.get(rsp)
 			retAddress := c.readBytes(c.mem, sp, 8)
-			hdebug("reading from mem", sp)
-			hdebug("returning to", retAddress)
 			c.regfile.set(rsp, uint64(sp+8))
 			c.regfile.set(rip, retAddress)
 			continue
