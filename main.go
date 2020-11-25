@@ -178,9 +178,8 @@ func (c *cpu) readBytes(from []byte, start uint64, bytes int) uint64 {
 }
 
 func (c *cpu) writeBytes(to []byte, start uint64, bytes int, val uint64) {
-	fmt.Println(val)
 	for i := 0; i < bytes; i++ {
-		to[i] = byte(val & (0xFF << (i * 8)))
+		to[start+uint64(i)] = byte(val >> (8*i) & 0xFF)
 	}
 }
 
@@ -188,12 +187,12 @@ var prefixBytes = []byte{0x48, 0x66}
 
 func (c *cpu) loop() {
 	for {
+		<-c.tick
+
 		ip := c.regfile.get(rip)
 		if ip == uint64(len(c.mem)-8) &&
-			c.mem[ip] == 0xB &&
-			c.mem[ip+1] == 0xE &&
-			c.mem[ip+2] == 0xE &&
-			c.mem[ip+3] == 0xF {
+			c.mem[ip] == 0xBE &&
+			c.mem[ip+1] == 0xEF {
 			break
 		}
 
@@ -261,29 +260,33 @@ func (c *cpu) loop() {
 
 		// inc instruction pointer
 		c.regfile.set(rip, ip+1)
-
-		<-c.tick
 	}
 }
 
-func (c *cpu) run(prog *program, auto bool) {
+func (c *cpu) run(prog *program) {
 	copy(c.mem[0x400000:0x400000+len(prog.bytes)], prog.bytes)
 	main := prog.findGlobalFunc("main")
 	c.regfile.set(rip, main.Value)
-	copy(c.mem[len(c.mem)-8:len(c.mem)-4], []byte{0xB, 0xE, 0xE, 0xF})
+	c.mem[len(c.mem)-8] = 0xBE
+	c.mem[len(c.mem)-7] = 0xEF
+	fmt.Println(uint64(len(c.mem)-8))
 	c.writeBytes(c.mem, uint64(len(c.mem)-16), 8, uint64(len(c.mem)-8))
-	hdebug("mem", c.readBytes(c.mem, uint64(len(c.mem)-16), 8))
 	c.regfile.set(rsp, uint64(len(c.mem)-16))
+	c.loop()
+}
 
-	if auto {
-		go func() {
-			for {
-				c.tick <- true
-			}
-		}()
+func (c *cpu) resolveDebuggerValue(dval string) (uint64, error) {
+	for reg, val := range registerMap {
+		if val == dval {
+			return c.regfile.get(reg), nil
+		}
 	}
 
-	c.loop()
+	if len(dval) > 2 && (dval[:2] == "0x" || dval[:2] == "0X") {
+		return strconv.ParseUint(dval[2:], 16, 64)	
+	}
+
+	return strconv.ParseUint(dval, 10, 64)
 }
 
 func repl(c *cpu) {
@@ -301,7 +304,6 @@ func repl(c *cpu) {
 	for {
 		fmt.Printf("> ")
 		scanner.Scan()
-		fmt.Printf("\n")
 		input := scanner.Text()
 		parts := strings.Split(input, " ")
 
@@ -314,33 +316,35 @@ func repl(c *cpu) {
 		case "m":
 			fallthrough
 		case "memory":
-			msg := "Invalid arguments: m/memory $from $to"
+			msg := "Invalid arguments: m/memory $from $to; use hex (0x10), decimal (10), or register name (rsp)"
 			if len(parts) != 3 {
 				fmt.Println(msg)
 				continue
 			}
 
-			from, err := strconv.Atoi(parts[1])
+			from, err := c.resolveDebuggerValue(parts[1])
 			if err != nil {
 				fmt.Println(msg)
 				continue
 			}
 
-			to, err := strconv.Atoi(parts[2])
+			to, err := c.resolveDebuggerValue(parts[2])
 			if err != nil {
 				fmt.Println(msg)
 				continue
 			}
 
-			hbdebug(fmt.Sprintf("memory[%d:%d]", c.mem, from, from+to), c.mem[from:from+to])
+			hbdebug(fmt.Sprintf("memory["+intFormat+":"+intFormat+"]", from, from+to), c.mem[from:from+to])
 
 		case "d":
 			fallthrough
 		case "decimal":
 			if intFormat == "%d" {
-				intFormat = "%x"
+				intFormat = "0x%x"
+				fmt.Println("Numbers displayed as hex")
 			} else {
 				intFormat = "%d"
+				fmt.Println("Numbers displayed as decimal")
 			}
 
 		case "r":
@@ -351,19 +355,24 @@ func repl(c *cpu) {
 				filter = parts[1]
 			}
 
-			for reg, name := range registerMap {
+			for i := 0; i < len(registerMap); i++ {
+				reg := register(i)
+				name := registerMap[reg]
 				if filter != "" {
 					filteredReg, ok := stringToRegister(filter)
 					if !ok || reg != filteredReg {
 						continue
 					}
-
-					fmt.Printf("%s:\t"+intFormat, name, c.regfile.get(reg))
 				}
-			}
-		}
 
-		c.tick <- true
+				fmt.Printf("%s:\t"+intFormat+"\n", name, c.regfile.get(reg))
+			}
+
+		case "s":
+			fallthrough
+		case "step":
+			c.tick <- true
+		}
 	}
 }
 
@@ -381,6 +390,7 @@ func main() {
 	for _, arg := range os.Args[1:] {
 		switch arg {
 		case "--debug":
+			fallthrough
 		case "-d":
 			debug = true
 		}
@@ -388,9 +398,13 @@ func main() {
 
 	// 10 MB
 	cpu := newCPU(0x400000 * 10)
-	cpu.run(prog, !debug)
 
+	go cpu.run(prog)
 	if debug {
 		repl(&cpu)
+	} else {
+		for {
+			cpu.tick <- true
+		}
 	}
 }
