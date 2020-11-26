@@ -224,7 +224,19 @@ func (c *cpu) loop() {
 }
 
 func (c *cpu) run(prog *program) {
-	copy(c.mem[0x400000:0x400000+len(prog.bytes)], prog.bytes)
+	startOfAddress := uint64(0)
+	for _, sec := range prog.elf.Sections {
+		if sec.Type != elf.SHT_NULL {
+			startOfAddress = sec.Addr-sec.Offset
+			break
+		}
+	}
+
+	if startOfAddress == 0 {
+		panic("Unable to find start of address")
+	}
+	
+	copy(c.mem[startOfAddress:startOfAddress+uint64(len(prog.bytes))], prog.bytes)
 	main := prog.findGlobalFunc("main")
 	c.regfile.set(rip, main.Value)
 	c.mem[len(c.mem)-8] = 0xBE
