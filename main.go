@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"debug/elf"
 	"fmt"
 	"io/ioutil"
@@ -11,37 +12,56 @@ import (
 	"strings"
 )
 
-type program struct {
-	elf   *elf.File
-	bytes []byte
+type process struct {
+	startAddress uint64
+	entryPoint   uint64
+	bin          []byte
 }
 
-func newProgramFromFile(filename string) (*program, error) {
-	bytes, err := ioutil.ReadFile(filename)
+func readELF(filename, entrySymbol string) (*process, error) {
+	bin, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
 
-	elffile, err := elf.Open(filename)
-	return &program{
-		elf:   elffile,
-		bytes: bytes,
-	}, err
-}
-
-func (p program) findGlobalFunc(name string) *elf.Symbol {
-	symbols, err := p.elf.Symbols()
+	elffile, err := elf.NewFile(bytes.NewReader(bin))
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
+	symbols, err := elffile.Symbols()
+	if err != nil {
+		return nil, err
+	}
+
+	var entryPoint uint64
 	for _, sym := range symbols {
-		if name == sym.Name && elf.STT_FUNC == elf.ST_TYPE(sym.Info) && elf.STB_GLOBAL == elf.ST_BIND(sym.Info) {
-			return &sym
+		if sym.Name == entrySymbol && elf.STT_FUNC == elf.ST_TYPE(sym.Info) && elf.STB_GLOBAL == elf.ST_BIND(sym.Info) {
+			entryPoint = sym.Value
 		}
 	}
 
-	return nil
+	if entryPoint == 0 {
+		return nil, fmt.Errorf("Could not find entrypoint symbol: %s", entrySymbol)
+	}
+
+	var startAddress uint64
+	for _, sec := range elffile.Sections {
+		if sec.Type != elf.SHT_NULL {
+			startAddress = sec.Addr - sec.Offset
+			break
+		}
+	}
+
+	if startAddress == 0 {
+		return nil, fmt.Errorf("Could not determine start address")
+	}
+
+	return &process{
+		startAddress: startAddress,
+		entryPoint:   entryPoint,
+		bin:          bin,
+	}, nil
 }
 
 type register int
@@ -100,7 +120,7 @@ func (regfile *registerFile) set(r register, v uint64) {
 }
 
 type cpu struct {
-	prog    *program
+	proc    *process
 	mem     []byte
 	regfile *registerFile
 	tick    chan bool
@@ -128,7 +148,7 @@ func hbdebug(msg string, bs []byte) {
 	fmt.Printf(str+"\n", args...)
 }
 
-func (c *cpu) readBytes(from []byte, start uint64, bytes int) uint64 {
+func readBytes(from []byte, start uint64, bytes int) uint64 {
 	val := uint64(0)
 	for i := 0; i < bytes; i++ {
 		val |= uint64(from[start+uint64(i)]) << (8 * i)
@@ -137,7 +157,7 @@ func (c *cpu) readBytes(from []byte, start uint64, bytes int) uint64 {
 	return val
 }
 
-func (c *cpu) writeBytes(to []byte, start uint64, bytes int, val uint64) {
+func writeBytes(to []byte, start uint64, bytes int, val uint64) {
 	for i := 0; i < bytes; i++ {
 		to[start+uint64(i)] = byte(val >> (8 * i) & 0xFF)
 	}
@@ -189,12 +209,12 @@ func (c *cpu) loop() {
 		if inb1 >= 0x50 && inb1 < 0x58 { // push
 			regvalue := c.regfile.get(register(inb1 - 0x50))
 			sp := c.regfile.get(rsp)
-			c.writeBytes(c.mem, sp-8, 8, regvalue)
+			writeBytes(c.mem, sp-8, 8, regvalue)
 			c.regfile.set(rsp, uint64(sp-8))
 		} else if inb1 >= 0x58 && inb1 < 0x60 { // pop
 			lhs := register(inb1 - 0x58)
 			sp := c.regfile.get(rsp)
-			c.regfile.set(lhs, c.readBytes(c.mem, sp, 8))
+			c.regfile.set(lhs, readBytes(c.mem, sp, 8))
 			c.regfile.set(rsp, uint64(sp+8))
 		} else if inb1 == 0x89 { // mov r/m16/32/64, r/m16/32/64
 			ip++
@@ -204,12 +224,12 @@ func (c *cpu) loop() {
 			c.regfile.set(lhs, c.regfile.get(rhs))
 		} else if inb1 >= 0xB8 && inb1 < 0xC0 { // mov r16/32/64, imm16/32/64
 			lreg := register(inb1 - 0xB8)
-			val := c.readBytes(c.mem, ip+uint64(1), widthPrefix/8)
+			val := readBytes(c.mem, ip+uint64(1), widthPrefix/8)
 			ip += uint64(widthPrefix / 8)
 			c.regfile.set(lreg, val)
 		} else if inb1 == 0xC3 { // ret
 			sp := c.regfile.get(rsp)
-			retAddress := c.readBytes(c.mem, sp, 8)
+			retAddress := readBytes(c.mem, sp, 8)
 			c.regfile.set(rsp, uint64(sp+8))
 			c.regfile.set(rip, retAddress)
 			continue
@@ -223,25 +243,12 @@ func (c *cpu) loop() {
 	}
 }
 
-func (c *cpu) run(prog *program) {
-	startOfAddress := uint64(0)
-	for _, sec := range prog.elf.Sections {
-		if sec.Type != elf.SHT_NULL {
-			startOfAddress = sec.Addr - sec.Offset
-			break
-		}
-	}
-
-	if startOfAddress == 0 {
-		panic("Unable to find start of address")
-	}
-
-	copy(c.mem[startOfAddress:startOfAddress+uint64(len(prog.bytes))], prog.bytes)
-	main := prog.findGlobalFunc("main")
-	c.regfile.set(rip, main.Value)
+func (c *cpu) run(proc *process) {
+	copy(c.mem[proc.startAddress:proc.startAddress+uint64(len(proc.bin))], proc.bin)
+	c.regfile.set(rip, proc.entryPoint)
 	c.mem[len(c.mem)-8] = 0xBE
 	c.mem[len(c.mem)-7] = 0xEF
-	c.writeBytes(c.mem, uint64(len(c.mem)-16), 8, uint64(len(c.mem)-8))
+	writeBytes(c.mem, uint64(len(c.mem)-16), 8, uint64(len(c.mem)-8))
 	c.regfile.set(rsp, uint64(len(c.mem)-16))
 	c.loop()
 }
@@ -351,7 +358,7 @@ func main() {
 		log.Fatal("Binary not provided")
 	}
 
-	prog, err := newProgramFromFile(os.Args[1])
+	proc, err := readELF(os.Args[1], "main")
 	if err != nil {
 		panic(err)
 	}
@@ -369,7 +376,7 @@ func main() {
 	// 10 MB
 	cpu := newCPU(0x400000 * 10)
 
-	go cpu.run(prog)
+	go cpu.run(proc)
 	if debug {
 		repl(&cpu)
 	} else {
