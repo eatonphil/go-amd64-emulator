@@ -227,7 +227,7 @@ func (c *cpu) run(prog *program) {
 	startOfAddress := uint64(0)
 	for _, sec := range prog.elf.Sections {
 		if sec.Type != elf.SHT_NULL {
-			startOfAddress = sec.Addr-sec.Offset
+			startOfAddress = sec.Addr - sec.Offset
 			break
 		}
 	}
@@ -235,7 +235,7 @@ func (c *cpu) run(prog *program) {
 	if startOfAddress == 0 {
 		panic("Unable to find start of address")
 	}
-	
+
 	copy(c.mem[startOfAddress:startOfAddress+uint64(len(prog.bytes))], prog.bytes)
 	main := prog.findGlobalFunc("main")
 	c.regfile.set(rip, main.Value)
