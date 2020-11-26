@@ -165,15 +165,13 @@ func writeBytes(to []byte, start uint64, bytes int, val uint64) {
 
 var prefixBytes = []byte{0x48, 0x66}
 
-func (c *cpu) loop() {
+func (c *cpu) loop(entryReturnAddress uint64) {
 	for {
 		<-c.tick
 
 		ip := c.regfile.get(rip)
-		if ip == uint64(len(c.mem)-8) &&
-			c.mem[ip] == 0xBE &&
-			c.mem[ip+1] == 0xEF {
-			os.Exit(int(c.regfile.get(rax)))
+		if ip == entryReturnAddress {
+			break
 		}
 
 		inb1 := c.mem[ip]
@@ -246,11 +244,11 @@ func (c *cpu) loop() {
 func (c *cpu) run(proc *process) {
 	copy(c.mem[proc.startAddress:proc.startAddress+uint64(len(proc.bin))], proc.bin)
 	c.regfile.set(rip, proc.entryPoint)
-	c.mem[len(c.mem)-8] = 0xBE
-	c.mem[len(c.mem)-7] = 0xEF
-	writeBytes(c.mem, uint64(len(c.mem)-16), 8, uint64(len(c.mem)-8))
-	c.regfile.set(rsp, uint64(len(c.mem)-16))
-	c.loop()
+	initialStackPointer := uint64(len(c.mem) - 8)
+	writeBytes(c.mem, initialStackPointer, 8, initialStackPointer)
+	c.regfile.set(rsp, initialStackPointer)
+	c.loop(initialStackPointer)
+	os.Exit(int(c.regfile.get(rax)))
 }
 
 func (c *cpu) resolveDebuggerValue(dval string) (uint64, error) {
