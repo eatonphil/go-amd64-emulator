@@ -352,7 +352,7 @@ func repl(c *cpu) {
 }
 
 func main() {
-	if len(os.Args) == 0 {
+	if len(os.Args) < 2 {
 		log.Fatal("Binary not provided")
 	}
 
